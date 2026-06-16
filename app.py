@@ -11,132 +11,262 @@ sheet_id = "10HAMo47BaGVm5WALX5H2G5SX9dfGhaO0PDCcpFT2Efw"
 
 st.set_page_config(page_title="Polla Hípica Pro", page_icon="🏇", layout="wide")
 
+# --- CONTROL DE SESIÓN (LOGIN) ---
+if "autenticado" not in st.session_state:
+    st.session_state.autenticado = False
+if "usuario_actual" not in st.session_state:
+    st.session_state.usuario_actual = None
+if "es_admin" not in st.session_state:
+    st.session_state.es_admin = False
+
 # --- CONTROL DE TIEMPO (VENEZUELA) ---
 tz = pytz.timezone('America/Caracas')
 ahora = datetime.now(tz)
-dia_semana = ahora.weekday() 
+dia_semana = ahora.weekday()  # 0=Lunes, 5=Sábado, 6=Domingo
 hora_actual = ahora.hour
+
+# Sábado (5) después de las 6:00 PM o todo el Domingo (6) -> Cierra Taquilla
 taquilla_abierta = not ( (dia_semana == 5 and hora_actual >= 18) or (dia_semana == 6) )
 
+# Sábado (5) después de las 5:00 PM o todo el Domingo (6) -> Cierra Subasta
+subasta_abierta = not ( (dia_semana == 5 and hora_actual >= 17) or (dia_semana == 6) )
 # --- CARGA DE DATOS ---
 def cargar_datos():
     base_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-    
-    # Inicializamos vacíos para evitar el UnboundLocalError
-    df_u = pd.DataFrame()
-    df_r = pd.DataFrame(columns=["Carrera", "1ro", "2do", "3ro", "Retirados"])
-    
+    df_usuarios_vacio = pd.DataFrame(columns=["Nombre", "ID", "C1", "C2", "C3", "C4", "C5", "C6", "Puntos", "Credito", "Password"])
+    df_resultados_vacio = pd.DataFrame(columns=["Carrera", "1ro", "2do", "3ro", "Retirados"])
     try:
-        # Cargar Usuarios
-        df_u = pd.read_csv(f"{base_url}&gid=0")
+        df_u = pd.read_csv(f"{base_url}&sheet=Usuarios")
         df_u.columns = df_u.columns.str.strip()
-        
-        # Cargar Resultados
-        url_res = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=Resultados"
-        df_r = pd.read_csv(url_res)
+        df_r = pd.read_csv(f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=Resultados")
         df_r.columns = df_r.columns.str.strip()
-    except Exception as e:
-        # Si falla la carga, mostramos el error pero no detenemos la app
-        st.sidebar.error(f"Error de conexión: {e}")
-        
-    return df_u, df_r
+        return df_u, df_r
+    except:
+        return df_usuarios_vacio, df_resultados_vacio
+
+def cargar_subastas():
+    df_subasta_vacio = pd.DataFrame(columns=["carrera", "ejemplar", "nombre_caballo", "imagen_stud", "precio", "postor"])
+    try:
+        res = requests.post(WEB_APP_URL, json={"tipo": "subastas"})
+        df_subasta = pd.DataFrame(res.json())
+        if not df_subasta.empty:
+            df_subasta.columns = df_subasta.columns.str.strip()
+            df_subasta["carrera"] = pd.to_numeric(df_subasta["carrera"], errors='coerce').fillna(0).astype(int)
+            df_subasta["ejemplar"] = pd.to_numeric(df_subasta["ejemplar"], errors='coerce').fillna(0).astype(int)
+            df_subasta["precio"] = pd.to_numeric(df_subasta["precio"], errors='coerce').fillna(0.0).astype(float)
+            return df_subasta
+        return df_subasta_vacio
+    except:
+        return df_subasta_vacio
 
 df, df_res = cargar_datos()
 
-st.title("🏇 Sistema de Polla Hípica Pro")
+# ==============================================================================
+# PANTALLA DE LOGIN
+# ==============================================================================
+if not st.session_state.autenticado:
+    # CORREGIDO: Se cambió 'unsafe_html' por 'unsafe_allow_html' para erradicar el TypeError
+    st.markdown("<h1 style='text-align: center;'>🏇 Polla Hípica Pro - Login</h1>", unsafe_allow_html=True)
+    
+    col_login, _ = st.columns([2, 2])
+    with col_login:
+        with st.form("form_login"):
+            usuario_input = st.text_input("Usuario / Nombre").strip()
+            password_input = st.text_input("Contraseña / PIN", type="password").strip()
+            bto_login = st.form_submit_button("Ingresar al Sistema")
+            
+            if bto_login:
+                # 1. Validar Administrador maestro
+                if usuario_input.lower() == "admin" and password_input == "2026":
+                    st.session_state.autenticado = True
+                    st.session_state.usuario_actual = "Admin"
+                    st.session_state.es_admin = True
+                    st.success("¡Bienvenido Administrador!")
+                    time.sleep(1)
+                    st.rerun()
+                
+                # 2. Validar Jugador desde el Excel
+                elif not df.empty and "Nombre" in df.columns:
+                    usuario_filtrado = df[df["Nombre"].astype(str).str.lower() == usuario_input.lower()]
+                    
+                    if not usuario_filtrado.empty:
+                        pass_real = str(usuario_filtrado.iloc[-1]["Password"]).strip()
+                        
+                        if password_input == pass_real:
+                            st.session_state.autenticado = True
+                            st.session_state.usuario_actual = usuario_filtrado.iloc[-1]["Nombre"]
+                            st.session_state.es_admin = False
+                            st.success(f"¡Hola, {st.session_state.usuario_actual}!")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("❌ Contraseña o PIN incorrecto.")
+                    else:
+                        st.error("❌ El usuario no está registrado.")
+                else:
+                    st.error("❌ No se pudo conectar a la base de datos de usuarios.")
+    st.stop() 
 
-# --- ESTADO DE TAQUILLA ---
-if taquilla_abierta:
-    st.success(f"🟢 TAQUILLA ABIERTA - {ahora.strftime('%I:%M %p')}")
+# ==============================================================================
+# INTERFAZ PRINCIPAL (POST-LOGIN)
+# ==============================================================================
+st.sidebar.markdown(f"👤 Usuario: **{st.session_state.usuario_actual}**")
+if st.sidebar.button("Cerrar Sesión"):
+    st.session_state.autenticado = False
+    st.session_state.usuario_actual = None
+    st.session_state.es_admin = False
+    st.rerun()
+
+# --- VISTA DEL ADMINISTRADOR ---
+if st.session_state.es_admin:
+    st.title("🔐 Panel de Control - Administrador")
+    tab_ranking, tab_admin_usuarios, tab_admin_jornada = st.tabs(["📊 Ver Ranking", "👥 Control de Usuarios", "⚙️ Manejo de Jornada"])
+    
+    with tab_ranking:
+        st.subheader("🏆 Posiciones en Vivo")
+        if not df.empty:
+            st.dataframe(df[["Nombre", "Puntos", "Credito"]], use_container_width=True)
+
+    with tab_admin_usuarios:
+        st.subheader("👥 Base de Datos de Jugadores")
+        st.write("Datos actuales registrados en tu Google Sheets:")
+        st.dataframe(df[["Nombre", "Credito", "Password", "Puntos"]], use_container_width=True, hide_index=True)
+
+    with tab_admin_jornada: # o tab4 según tengas tu código
+        st.subheader("⚙️ Cierre de Carreras y Resultados")
+        st.info("💡 Si hay un empate en alguna posición, coloca los números separados por comas (Ej: 4, 7)")
+        
+        with st.form("form_admin_res"):
+            resultados_data = []
+            for i in range(1, 7):
+                st.markdown(f"#### 🏁 Carrera {i}")
+                c1, c2, c3, c4 = st.columns(4)
+                
+                # Cambiamos a text_input para permitir empates (Ej: "5" o "5, 12")
+                p1 = c1.text_input("1º Lugar (Ganador)", value="0", key=f"p1_{i}", placeholder="Ej: 4 o 4,7")
+                p2 = c2.text_input("2º Lugar", value="0", key=f"p2_{i}", placeholder="Ej: 2")
+                p3 = c3.text_input("3º Lugar", value="0", key=f"p3_{i}", placeholder="Ej: 9")
+                ret = c4.text_input("Retirados", key=f"ret_{i}", placeholder="Ej: 5, 12")
+                
+                resultados_data.append({"p1": p1, "p2": p2, "p3": p3, "ret": ret})
+            
+            if st.form_submit_button("Guardar Resultados y Computar Puntos"):
+                # --- VALIDACIÓN DE ERRORES SILLY (Distracciones) ---
+                error_detectado = False
+                for idx, r in enumerate(resultados_data):
+                    # Si el admin dejó campos idénticos por error (y no es "0")
+                    if r["p1"] == r["p2"] == r["p3"] and r["p1"] != "0":
+                        st.error(f"❌ Error en Carrera {idx+1}: Pusiste el mismo ejemplar en las tres posiciones.")
+                        error_detectado = True
+                        break
+                
+                if not error_detectado:
+                    requests.post(WEB_APP_URL, json={"tipo": "resultados", "ganadores": resultados_data})
+                    st.success("¡Resultados subidos y puntos recalculados!")
+                    time.sleep(1)
+                    st.rerun()
+
+# --- VISTA DE JUGADOR NORMAL ---
 else:
-    st.error(f"🔴 TAQUILLA CERRADA")
+    st.title(f"🏇 Panel de {st.session_state.usuario_actual}")
+    
+    user_info = df[df["Nombre"] == st.session_state.usuario_actual].iloc[-1]
+    credito_disp = user_info["Credito"]
+    st.sidebar.metric(label="Mi Saldo Disponible", value=f"${credito_disp:.2f}")
 
-tab1, tab2, tab3 = st.tabs(["📝 Sellar Jugada", "📊 Ranking", "🔐 Admin"])
+    tab1, tab2, tab3 = st.tabs(["📝 Sellar mi Polla", "🔨 Subasta por Carreras", "📊 Ver Tabla General"])
 
-with tab1:
-    if not taquilla_abierta:
-        st.warning("Taquilla cerrada hasta el lunes.")
-    else:
-        nombre_sel = st.selectbox("Selecciona tu nombre", df["Nombre"].unique() if not df.empty else [])
-        if nombre_sel:
-            # Buscar datos del usuario (última fila para saldo actualizado)
-            user_data = df[df["Nombre"] == nombre_sel].iloc[-1]
-            credito_disp = user_data["Credito"]
-            pass_real = str(user_data["Password"])
-            
-            st.markdown(f"### 💰 Saldo: **${credito_disp}** | 🎟️ Costo: **$10**")
-            pin = st.text_input("Ingresa tu PIN", type="password", key="pin_sellar")
-            
+    with tab1:
+        if not taquilla_abierta:
+            st.warning("🔒 La taquilla tradicional está cerrada.")
+        else:
+            st.markdown(f"### Sellar Jugada - Costo: **$10**")
             col1, col2 = st.columns(2)
             jugadas = []
             for i in range(1, 7):
                 with col1 if i <= 3 else col2:
-                    # Filtrar retirados
                     lista_ret = []
-                    if not df_res.empty and i in df_res["Carrera"].values:
-                       fila_carrera = df_res[df_res["Carrera"].astype(int) == i]
-                       if not fila_carrera.empty:
-                           # Limpiamos el texto de retirados y lo convertimos en lista de enteros
-                        ret_str = str(fila_carrera["Retirados"].values[0]).replace('nan', '')
-                        if ret_str.strip():
-                            # Esto maneja espacios, comas y puntos
-                         lista_ret = [int(x.strip()) for x in ret_str.replace('.', ',').split(",") if x.strip().isdigit()]
+                    if not df_res.empty and i in df_res["Carrera"].astype(int).values:
+                        fila_carrera = df_res[df_res["Carrera"].astype(int) == i]
+                        if not fila_carrera.empty:
+                            ret_str = str(fila_carrera["Retirados"].values[0]).replace('nan', '')
+                            if ret_str.strip():
+                                lista_ret = [int(x.strip()) for x in ret_str.replace('.', ',').split(",") if x.strip().isdigit()]
                     
-                    # Solo mostramos los números que NO están en la lista de retirados
                     opciones = [n for n in range(1, 21) if n not in lista_ret]
                     val = st.selectbox(f"Carrera {i}", opciones, index=None, placeholder="Ejemplar", key=f"c{i}")
                     jugadas.append(val)
 
-            if st.button("🚀 SELLAR POLLA"):
-                if pin != pass_real:
-                    st.error("PIN incorrecto")
-                elif None in jugadas:
-                    st.warning("Completa las 6 carreras")
+            if st.button("🚀 SELLAR MI JUGADA"):
+                if None in jugadas:
+                    st.warning("Debes seleccionar un ejemplar para las 6 carreras.")
                 elif credito_disp < 10:
-                    st.error("Saldo insuficiente")
+                    st.error("Saldo insuficiente para sellar.")
                 else:
-                    payload = {"tipo": "sellar", "nombre": nombre_sel, "nuevo_credito": int(credito_disp - 10), "jugadas": jugadas, "password": pass_real}
+                    payload = {"tipo": "sellar", "nombre": st.session_state.usuario_actual, "nuevo_credito": int(credito_disp - 10), "jugadas": jugadas, "password": str(user_info["Password"])}
                     res = requests.post(WEB_APP_URL, json=payload)
                     if "Éxito" in res.text:
-                        st.success("¡Sella con éxito!")
+                        st.success("¡Polla sellada exitosamente!")
                         st.balloons()
                         time.sleep(2)
                         st.rerun()
 
-with tab2:
-    st.subheader("🏆 Tabla de Posiciones")
-    # Filtro robusto para evitar AttributeError
-    df_jugadas = df[df.iloc[:, 1].astype(str).str.contains("P-", na=False)].copy()
-    
-    if df_jugadas.empty:
-        st.info("No hay jugadas registradas.")
-    else:
-        df_jugadas = df_jugadas.sort_values(by=df_jugadas.columns[8], ascending=False).reset_index(drop=True)
+    with tab2:
+        st.subheader("🔨 Subasta en Vivo")
+        df_sub = cargar_subastas()
         
-        def medalla(i):
-            if i == 0: return "🥇 Oro"
-            if i == 1: return "🥈 Plata"
-            if i == 2: return "🥉 Bronce"
-            return f"{i+1}º"
-        
-        df_jugadas.insert(0, "Lugar", [medalla(i) for i in range(len(df_jugadas))])
-        st.dataframe(df_jugadas[["Lugar", "Nombre", "Puntos", "C1", "C2", "C3", "C4", "C5", "C6"]], use_container_width=True, hide_index=True)
-
-with tab3:
-    if st.text_input("Clave Maestra", type="password") == "2026":
-        with st.form("form_admin"):
-            resultados_data = []
-            for i in range(1, 7):
-                st.write(f"Carrera {i}")
-                c1, c2, c3, c4 = st.columns(4)
-                p1 = c1.number_input("1º", 0, 20, key=f"p1_{i}")
-                p2 = c2.number_input("2º", 0, 20, key=f"p2_{i}")
-                p3 = c3.number_input("3º", 0, 20, key=f"p3_{i}")
-                ret = c4.text_input("Retirados", key=f"ret_{i}", placeholder="Ej: 5, 12")
-                resultados_data.append({"p1": p1, "p2": p2, "p3": p3, "ret": ret})
+        if df_sub.empty:
+            st.info("No hay subastas activas en este momento.")
+        else:
+            carrera_sel = st.radio("Selecciona Carrera:", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], horizontal=True)
+            df_carrera = df_sub[df_sub["carrera"] == carrera_sel]
             
-            if st.form_submit_button("Guardar Resultados y Retirados"):
-                requests.post(WEB_APP_URL, json={"tipo": "resultados", "ganadores": resultados_data})
-                st.success("Hoja de Resultados actualizada.")
-                time.sleep(1)
-                st.rerun()
+            for index, row in df_carrera.iterrows():
+                ejemplar = int(row["ejemplar"])
+                nombre_caballo = str(row["nombre_caballo"]) if pd.notna(row["nombre_caballo"]) else ""
+                img_url = str(row["imagen_stud"]) if pd.notna(row["imagen_stud"]) else ""
+                precio_act = float(row["precio"])
+                postor_act = str(row["postor"])
+                
+                texto_caballo = f"#{ejemplar} - {nombre_caballo}" if nombre_caballo.strip() else f"Ejemplar #{ejemplar}"
+                
+                with st.container():
+                    col_img, col_info, col_puja = st.columns([1, 3, 2])
+                    with col_img:
+                        if img_url.strip() and img_url.startswith("http"):
+                            st.image(img_url, width=60)
+                        else:
+                            st.caption("🏇")
+                    with col_info:
+                        st.markdown(f"##### **{texto_caballo}**")
+                        st.markdown(f"💰 Precio: **${precio_act:.2f}** | 👑 Líder: *{postor_act}*")
+                    with col_puja:
+                        if not subasta_abierta:
+                            st.error("🔒 Cerrada")
+                        else:
+                            nueva_puja = st.number_input(f"Pujar por {texto_caballo}", min_value=float(precio_act + 1.0), step=1.0, key=f"puja_{carrera_sel}_{ejemplar}")
+                            if st.button(f"🔥 Ofertar", key=f"btn_{carrera_sel}_{ejemplar}"):
+                                payload_puja = {
+                                  "tipo": "pujar",
+                                  "carrera": int(carrera_sel),
+                                  "ejemplar": int(ejemplar),
+                                  "nueva_puja": float(nueva_puja),
+                                  "nombre": st.session_state.usuario_actual
+                                }
+                                res_puja = requests.post(WEB_APP_URL, json=payload_puja)
+                                
+                                # MEJORA DE RESPUESTA DE ERRORES DE CRÉDITO
+                                if "Éxito" in res_puja.text:
+                                    st.success(f"¡Vas ganando el ejemplar por ${nueva_puja}!")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    # Si no hay crédito o pasa algo, muestra el error exacto que envía Google
+                                    st.error(res_puja.text)
+    with tab3:
+        st.subheader("🏆 Tabla de Posiciones General")
+        if not df.empty and df.shape[1] > 1:
+            df_jugadas = df[df.iloc[:, 1].astype(str).str.contains("P-", na=False)].copy()
+            if not df_jugadas.empty:
+                df_jugadas = df_jugadas.sort_values(by=df_jugadas.columns[8], ascending=False).reset_index(drop=True)
+                st.dataframe(df_jugadas[["Nombre", "Puntos", "C1", "C2", "C3", "C4", "C5", "C6"]], use_container_width=True)
